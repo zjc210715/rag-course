@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+chromadb
+ollama
+pymupdf
+python-docx
+streamlit
+requests
