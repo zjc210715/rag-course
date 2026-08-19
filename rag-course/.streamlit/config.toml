@@ -1,0 +1,32 @@
+# 主题：档案蓝 + 印章红，宋体标题，冷调纸面
+[theme]
+base = "light"
+primaryColor = "#25557A"             # 档案蓝：信任、制度感
+backgroundColor = "#F6F7F9"          # 冷调纸面
+secondaryBackgroundColor = "#ECEEF2"
+textColor = "#1C2430"                # 墨色正文
+linkColor = "#25557A"
+borderColor = "#D8DDE4"
+baseRadius = "10px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = false
+headingFont = "'Noto Serif SC', 'Source Han Serif SC', 'SimSun', serif"   # 宋体标题
+font = "sans-serif"
+baseFontSize = 16
+headingFontSizes = ["34px", "24px", "20px", "17px", "15px", "13px"]
+headingFontWeights = [700, 600, 600, 600, 500, 500]
+
+redColor = "#B23A2E"                 # 印章红：引用/状态
+blueColor = "#25557A"
+greenColor = "#1A7F37"
+orangeColor = "#BF8700"
+violetColor = "#6E5BA8"
+grayColor = "#6B7A8C"
+
+[theme.sidebar]
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#ECEEF2"
+textColor = "#1C2430"
+borderColor = "#D8DDE4"
+primaryColor = "#25557A"
