@@ -127,6 +127,33 @@ _SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""]
 # MULTILINE：让 ^ 匹配每一行的开头，才能识别文档任意位置的标题
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 
+# 受保护内容：代码块 / Markdown 表格——分块时整体保留，不拆散
+_PROTECTED_PATTERNS = [
+    re.compile(r"```[\s\S]*?```"),                          # 代码块
+    re.compile(r"(?:^|\n)(?:[ \t]*\|[^\n]*\|[ \t]*\n)+"),   # Markdown 表格块
+]
+
+
+def _protect(text: str) -> tuple[str, list[str]]:
+    """把受保护内容替换成占位符，返回 (占位文本, 原文列表)。"""
+    protected: list[str] = []
+
+    def _repl(match: re.Match) -> str:
+        protected.append(match.group(0))
+        return f"\x01P{len(protected) - 1}\x01"
+
+    protected_text = text
+    for pattern in _PROTECTED_PATTERNS:
+        protected_text = pattern.sub(_repl, protected_text)
+    return protected_text, protected
+
+
+def _restore(text: str, protected: list[str]) -> str:
+    """把占位符还原成原文。"""
+    for i, original in enumerate(protected):
+        text = text.replace(f"\x01P{i}\x01", original)
+    return text
+
 
 def chunk_document(
     text: str,
@@ -134,10 +161,17 @@ def chunk_document(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_OVERLAP,
 ) -> list[Chunk]:
-    """文档里有标题就走 markdown 分块（保留章节路径），否则递归切分。"""
-    if _HEADING_RE.search(text):
-        return _markdown_split(text, chunk_size, overlap)
-    return [Chunk(piece) for piece in _recursive_split(text, chunk_size, overlap)]
+    """先保护表格/代码块（整体不拆散），再分块；有标题走 markdown，否则递归切分。"""
+    protected_text, protected = _protect(text)
+    if _HEADING_RE.search(protected_text):
+        chunks = _markdown_split(protected_text, chunk_size, overlap)
+    else:
+        chunks = [
+            Chunk(piece) for piece in _recursive_split(protected_text, chunk_size, overlap)
+        ]
+    for chunk in chunks:
+        chunk.text = _restore(chunk.text, protected)
+    return chunks
 
 
 def _recursive_split(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -198,22 +232,32 @@ def _extract_sections(text: str) -> list[tuple[str, str]]:
 
 
 def _markdown_split(text: str, chunk_size: int, overlap: int) -> list[Chunk]:
-    """按标题分块：同父标题的小节可合并到接近 chunk_size，超长小节单独递归切分。"""
+    """按标题分块：同父标题的小节可合并到接近 chunk_size，超长小节单独递归切分。
+
+    metadata.section = 第一个小节路径（显示用）；metadata.sections = 覆盖的所有小节路径
+    （标题上下文：合并块引用时不会指错小节）。
+    """
     chunks: list[Chunk] = []
     buffer: list[str] = []
     buffer_path = ""
+    buffer_sections: list[str] = []
 
     def flush_buffer() -> None:
-        nonlocal buffer, buffer_path
+        nonlocal buffer, buffer_path, buffer_sections
         if buffer:
-            chunks.append(Chunk("\n\n".join(buffer), {"section": buffer_path}))
-        buffer, buffer_path = [], ""
+            chunks.append(
+                Chunk(
+                    "\n\n".join(buffer),
+                    {"section": buffer_path, "sections": buffer_sections},
+                )
+            )
+        buffer, buffer_path, buffer_sections = [], "", []
 
     for path, body in _extract_sections(text):
         if len(body) > chunk_size:
             flush_buffer()
             for piece in _recursive_split(body, chunk_size, overlap):
-                chunks.append(Chunk(piece, {"section": path}))
+                chunks.append(Chunk(piece, {"section": path, "sections": [path]}))
             continue
         # 父标题不同的小节不允许合并，防止跨章串味
         parent = path.rpartition(" / ")[0]
@@ -222,6 +266,8 @@ def _markdown_split(text: str, chunk_size: int, overlap: int) -> list[Chunk]:
             flush_buffer()
         buffer.append(body)
         buffer_path = buffer_path or path
+        if path not in buffer_sections:
+            buffer_sections.append(path)
     flush_buffer()
     return chunks
 

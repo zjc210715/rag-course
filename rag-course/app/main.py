@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import ipaddress
 import sys
+import base64
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -21,8 +22,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 import auth
+import docmeta
 import ratelimit
 from audit import log_question
+from generate import generate_suggestions
 from rag import ask, ask_stream
 
 
@@ -102,6 +105,12 @@ class LoginResponse(BaseModel):
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class UploadRequest(BaseModel):
+    filename: str
+    content_b64: str          # base64 编码的文件内容（小文件教学方案；生产可换 multipart）
+    access: str = "all"       # 权限标签：all / finance / dept_xxx / executive
 
 
 @app.get("/api/health")
@@ -220,6 +229,36 @@ def chat_stream(req: ChatRequest, user: dict = Depends(get_current_user)) -> Str
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+# 首屏推荐问题缓存（10 分钟），避免每次刷新都调模型
+_suggestions_cache: dict = {"ts": 0.0, "items": []}
+
+
+@app.get("/api/chat/suggestions")
+def chat_suggestions(user: dict = Depends(get_current_user)) -> dict:
+    """基于知识库内容生成推荐问题（首屏用，带缓存）。"""
+    import time
+
+    now = time.time()
+    if now - _suggestions_cache["ts"] < 600 and _suggestions_cache["items"]:
+        return {"questions": _suggestions_cache["items"]}
+
+    import chromadb
+    from store import CHROMA_DIR, COLLECTION_NAME
+
+    collection = chromadb.PersistentClient(path=str(CHROMA_DIR)).get_collection(COLLECTION_NAME)
+    sample = collection.get(limit=5)
+    if not sample or not sample.get("documents"):
+        return {"questions": []}
+
+    chunks = [
+        {"text": text, "section": meta.get("section") or "", "file_name": meta.get("file_name")}
+        for text, meta in zip(sample["documents"], sample["metadatas"])
+    ]
+    questions = generate_suggestions(chunks)
+    _suggestions_cache.update(ts=now, items=questions)
+    return {"questions": questions}
+
+
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
     """管理员依赖：权限组里必须含 admin，否则 403（有资格问题，不是身份问题）。"""
     if "admin" not in user["groups"]:
@@ -232,4 +271,54 @@ def rebuild_index(admin: dict = Depends(require_admin)) -> dict:
     """重建索引（仅管理员可调）。"""
     from store import build_index
     collection = build_index(chunk_size=150)  # 150 是评估结论推荐的分块大小
+    return {"status": "ok", "chunks": collection.count()}
+
+
+@app.post("/api/documents/upload")
+def upload_document(req: UploadRequest, user: dict = Depends(get_current_user)) -> dict:
+    """上传文档：保存 + 登记归属 + 重建索引。
+
+    任何登录用户都可以上传（相当于 contributor），归属记录到登记表；
+    删除/管理走归属守卫（见 DELETE 接口）。
+    """
+    # 防路径穿越：只允许纯文件名
+    if Path(req.filename).name != req.filename:
+        raise HTTPException(status_code=400, detail="文件名不合法")
+    if Path(req.filename).suffix.lower() not in {".md", ".markdown", ".txt", ".pdf", ".docx"}:
+        raise HTTPException(status_code=400, detail="不支持的格式")
+    try:
+        content = base64.b64decode(req.content_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="文件内容编码错误")
+
+    data_dir = Path(__file__).resolve().parent.parent / "data" / "sample"
+    (data_dir / req.filename).write_bytes(content)
+    docmeta.register(req.filename, user["username"], req.access)
+    auth.log_security_event("doc_upload", user["username"], "api", f"{req.filename} access={req.access}")
+
+    from store import build_index
+    collection = build_index(chunk_size=150)
+    return {"status": "ok", "chunks": collection.count()}
+
+
+@app.delete("/api/documents/{filename}")
+def delete_document(filename: str, user: dict = Depends(get_current_user)) -> dict:
+    """删除文档：只有上传者本人或管理员可以（归属守卫 OwnedDocOrAdmin）。"""
+    if Path(filename).name != filename:
+        raise HTTPException(status_code=400, detail="文件名不合法")
+    meta = docmeta.get(filename)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="文档不存在或未登记")
+    if user["username"] != meta["creator"] and "admin" not in user["groups"]:
+        raise HTTPException(status_code=403, detail="只有上传者或管理员可以删除")
+
+    data_dir = Path(__file__).resolve().parent.parent / "data" / "sample"
+    target = data_dir / filename
+    if target.exists():
+        target.unlink()
+    docmeta.remove(filename)
+    auth.log_security_event("doc_delete", user["username"], "api", filename)
+
+    from store import build_index
+    collection = build_index(chunk_size=150)
     return {"status": "ok", "chunks": collection.count()}

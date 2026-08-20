@@ -4,6 +4,7 @@ __pycache__/
 data/chroma/
 data/audit*.jsonl
 data/*.db
+data/doc_registry.json
 certs/*.key
 backups/
 

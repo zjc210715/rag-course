@@ -94,6 +94,7 @@ def retrieve(
         {
             "text": doc,
             "section": meta.get("section") or meta.get("file_name"),
+            "sections": meta.get("sections") or [],
             "file_name": meta.get("file_name"),
             "score": DENSE_WEIGHT * d + LEXICAL_WEIGHT * lex,
         }

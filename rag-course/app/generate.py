@@ -53,3 +53,25 @@ def stream_answer(
     )
     for piece in stream:
         yield piece["message"]["content"]
+
+
+def generate_suggestions(chunks: list[dict], count: int = 4) -> list[str]:
+    """基于知识库内容片段，让模型生成员工可能会问的问题（首屏推荐用）。"""
+    context = "\n".join(
+        f"[{i + 1}] {chunk['text'][:200]}" for i, chunk in enumerate(chunks[:5])
+    )
+    user_prompt = (
+        "以下是企业内部知识库的部分内容片段。请根据这些内容，生成"
+        f"{count} 个员工可能会问的问题。要求：只输出问题，每行一个，不要编号，不要解释。\n\n"
+        f"内容：\n{context}"
+    )
+    response = ollama.chat(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    questions = [
+        line.strip().lstrip("0123456789.、- ").strip()
+        for line in response["message"]["content"].splitlines()
+        if line.strip()
+    ]
+    return questions[:count]

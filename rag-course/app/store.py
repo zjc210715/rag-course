@@ -13,7 +13,8 @@ from pathlib import Path
 import chromadb
 import ollama
 
-from ingest import Chunk, process_document
+import docmeta
+from ingest import SUPPORTED_SUFFIXES, Chunk, process_document
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "sample"
 CHROMA_DIR = Path(__file__).resolve().parent.parent / "data" / "chroma"
@@ -36,6 +37,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 def build_index(chunk_size: int = 500, overlap: int = 50) -> chromadb.Collection:
     """加载文档 → 分块 → 打权限标签 → 向量化 → 存入 Chroma（每次运行都重建索引）。"""
+    docmeta.ensure_seeded()
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     try:
         client.delete_collection(COLLECTION_NAME)
@@ -45,9 +47,11 @@ def build_index(chunk_size: int = 500, overlap: int = 50) -> chromadb.Collection
 
     chunks: list[Chunk] = []
     for path in sorted(DATA_DIR.iterdir()):
-        if path.suffix.lower() in {".md", ".markdown", ".txt"}:
+        if path.suffix.lower() in SUPPORTED_SUFFIXES:
             for chunk in process_document(path, chunk_size=chunk_size, overlap=overlap):
-                chunk.metadata["access"] = FILE_ACCESS.get(path.name, "all")
+                # 权限标签优先读登记表（上传时指定），没有则回退硬编码默认
+                meta = docmeta.get(path.name)
+                chunk.metadata["access"] = meta["access"] if meta else FILE_ACCESS.get(path.name, "all")
                 chunks.append(chunk)
 
     if not chunks:

@@ -53,6 +53,8 @@
 | 依赖 | 改 requirements.txt 后 rebuild | pip 全量重装，慢，挑低峰期 |
 | 模型 | `docker exec rag-ollama ollama pull <模型>` 先单独验证 | 不要直接换正在用的模型 |
 
+**改动 docker-compose.yml 后**：建议用 `docker compose up -d` 让 nginx 一起重建，而不是只 restart 单个容器——否则 nginx 缓存的是旧容器 IP，会 502（见第 5 节）。
+
 **回滚**：
 
 ```text
@@ -66,7 +68,8 @@
 
 | 症状 | 常见原因 | 处理 |
 | --- | --- | --- |
-| nginx 502 | backend 挂了/重启中 | `docker compose logs backend --tail 100`，`docker compose restart backend` |
+| nginx 502 | backend/ui 容器挂了或重启中 | 先看 `docker compose ps` + `docker compose logs backend --tail 100` / `logs ui`，查完 `docker compose restart backend` |
+| nginx 502（backend/ui 日志都正常） | 容器重建后换了新 IP，nginx 还缓存旧 IP | `docker compose restart nginx` 让它重新解析服务名；仍不行则 `docker compose up -d --force-recreate` 全套重建 |
 | 端口冲突 | 宿主机程序占端口 | `netstat -ano \| findstr <端口>` 找占用者 |
 | 报"模型不存在" | ollama 容器没拉模型 | `docker exec rag-ollama ollama pull qwen3:8b` |
 | 登录被集体锁 | 限流误伤（同 IP） | 等 15 分钟，或 `docker compose restart backend`（内存限流清零） |

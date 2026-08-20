@@ -234,7 +234,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="用户管理")
     parser.add_argument(
         "command",
-        choices=["seed", "add-user", "change-password", "list", "security-log"],
+        choices=["seed", "add-user", "change-password", "set-groups", "list", "security-log"],
     )
     args = parser.parse_args()
 
@@ -261,6 +261,22 @@ def main() -> None:
             sys.exit(1)
         if change_password(username, password):
             print(f"已修改 {username} 的密码，其所有登录会话已失效")
+    elif args.command == "set-groups":
+        init_db()
+        username = input("用户名：")
+        if get_user(username) is None:
+            print(f"用户 {username} 不存在")
+            sys.exit(1)
+        groups_input = input("新权限组（逗号分隔，如 all,finance）：")
+        groups = [g.strip() for g in groups_input.split(",") if g.strip()]
+        with closing(_connect()) as conn:
+            conn.execute(
+                "UPDATE users SET groups = ? WHERE username = ?",
+                (json.dumps(groups), username),
+            )
+            conn.commit()
+        log_security_event("group_change", username, "cli", f"新权限组 {groups}")
+        print(f"已更新 {username} 的权限组：{groups}")
     elif args.command == "list":
         init_db()
         with closing(_connect()) as conn:

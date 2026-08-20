@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 from pathlib import Path
 
 import requests
@@ -71,7 +72,10 @@ def render_citations(citations: list[dict]) -> None:
             cols = st.columns([2, 10], vertical_alignment="center")
             cols[0].badge(str(i), color="red")
             with cols[1]:
-                st.markdown(f"**{cite['section']}**")
+                label = cite["section"]
+                if len(cite.get("sections") or []) > 1:
+                    label += f"（覆盖 {len(cite['sections'])} 个小节）"
+                st.markdown(f"**{label}**")
                 st.caption(f"{cite['file_name']} · 相关度 `{cite['score']:.3f}`")
 
 
@@ -148,11 +152,30 @@ with st.sidebar:
         uploaded = st.file_uploader(
             "上传文档", type=["md", "txt", "pdf", "docx"], label_visibility="collapsed"
         )
-        if uploaded is not None:
-            target = DATA_DIR / uploaded.name
-            target.write_bytes(uploaded.getvalue())
-            st.toast(f"已保存：{uploaded.name}", icon=":material/check_circle:")
-        if st.button("重建索引", type="primary", icon=":material/sync:"):
+        access = st.selectbox(
+            "可见范围",
+            ["all", "finance", "dept_HR", "executive"],
+            label_visibility="collapsed",
+            help="文档权限标签：all=全员，部门组=对应成员，executive=机密",
+        )
+        if uploaded is not None and st.button("上传并入库", type="primary", icon=":material/upload:"):
+            content_b64 = base64.b64encode(uploaded.getvalue()).decode("ascii")
+            with st.spinner("正在上传并重建索引…"):
+                resp = requests.post(
+                    f"{API}/api/documents/upload",
+                    json={
+                        "filename": uploaded.name,
+                        "content_b64": content_b64,
+                        "access": access,
+                    },
+                    headers=auth_headers(),
+                    timeout=300,
+                )
+            if resp.status_code == 200:
+                st.toast(f"已入库 {resp.json()['chunks']} 个块", icon=":material/database:")
+            else:
+                st.error(resp.json().get("detail", "上传失败"), icon=":material/error:")
+        if st.button("重建索引（管理员）", icon=":material/sync:"):
             with st.spinner("正在向量化并入库…"):
                 response = requests.post(f"{API}/api/documents/rebuild", timeout=300)
             if response.status_code == 200:
@@ -220,7 +243,9 @@ with st.container(gap="large"):
     if not st.session_state.messages:
         st.space("medium")
         st.caption("试试从这几个问题开始，或直接输入")
-        selected = st.pills("建议问题", SUGGESTIONS, label_visibility="collapsed")
+        # 先显示已有（或静态回退）的问题，不阻塞对话栏渲染
+        questions = st.session_state.get("suggestions") or SUGGESTIONS
+        selected = st.pills("建议问题", questions, label_visibility="collapsed")
     else:
         selected = None
 
@@ -278,3 +303,18 @@ if prompt:
             except requests.exceptions.RequestException as exc:
                 st.error(f"连接后端失败：{exc}")
                 st.session_state.messages.pop()
+
+# 动态刷新推荐问题：放在脚本末尾，不阻塞对话栏渲染（每次会话只生成一次）
+if not st.session_state.messages and not st.session_state.get("suggestions_fetched"):
+    st.session_state.suggestions_fetched = True
+    with st.spinner("正在生成推荐问题…"):
+        try:
+            resp = requests.get(
+                f"{API}/api/chat/suggestions", headers=auth_headers(), timeout=30
+            )
+            st.session_state.suggestions = (
+                resp.json().get("questions", []) if resp.status_code == 200 else []
+            )
+        except Exception:
+            st.session_state.suggestions = []
+    st.rerun()
