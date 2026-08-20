@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import requests
 import streamlit as st
 
-API = "http://127.0.0.1:8000"
+API = os.environ.get("API_URL", "http://127.0.0.1:8000")  # 容器内由 compose 注入 backend 地址
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "sample"
 MAX_HISTORY_TURNS = 6
 
