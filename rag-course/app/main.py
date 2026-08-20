@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -49,6 +50,32 @@ def get_current_user(authorization: str = Header(default="")) -> dict:
     if user is None:
         raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
     return user
+
+
+# ---------- 真实客户端 IP（nginx 反代后的限流依赖它） ----------
+
+# 可信代理：本机 + docker 内网网段。只有这些来源的 X-Forwarded-For 才被信任，
+# 防止客户端绕过 nginx 直连后端时伪造 IP。
+TRUSTED_PROXIES = ["127.0.0.1", "::1", "172.16.0.0/12", "10.0.0.0/8"]
+
+
+def _is_trusted(peer: str) -> bool:
+    """判断对端 IP 是否属于可信代理网段。"""
+    try:
+        ip = ipaddress.ip_address(peer)
+        return any(ip in ipaddress.ip_network(net) for net in TRUSTED_PROXIES)
+    except ValueError:
+        return False
+
+
+def get_client_ip(request: Request) -> str:
+    """取真实客户端 IP：只有可信代理转发的请求才信任 X-Forwarded-For。"""
+    peer = request.client.host if request.client else "unknown"
+    if _is_trusted(peer):
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()  # 最左边 = 原始客户端
+    return peer
 
 
 class ChatRequest(BaseModel):
@@ -104,23 +131,31 @@ def login(req: LoginRequest, request: Request) -> LoginResponse:
     - 限流：同一 IP+用户名 5 分钟内失败 5 次则锁定 15 分钟（防暴力破解）；
     - 密码错误统一返回 401，不透露是用户名不存在还是密码错。
     """
-    ip = request.client.host if request.client else "unknown"
+    ip = get_client_ip(request)
     if ratelimit.is_locked(ip, req.username):
+        auth.log_security_event("login_locked", req.username, ip, "触发限流锁定")
         raise HTTPException(status_code=429, detail="尝试次数过多，请 15 分钟后再试")
     token = auth.authenticate(req.username, req.password)
     if token is None:
         ratelimit.record_failure(ip, req.username)
+        auth.log_security_event("login_failure", req.username, ip, "密码错误或用户不存在")
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     ratelimit.reset(ip, req.username)
+    auth.log_security_event("login_success", req.username, ip)
     user = auth.get_user(req.username)
     return LoginResponse(token=token, username=req.username, groups=user["groups"])
 
 
 @app.post("/api/auth/logout")
-def logout(authorization: str = Header(default="")) -> dict:
+def logout(request: Request, authorization: str = Header(default="")) -> dict:
     """登出：服务端删掉会话，token 立即失效。"""
+    ip = get_client_ip(request)
     if authorization.startswith("Bearer "):
-        auth.logout(authorization[7:])
+        token = authorization[7:]
+        user = auth.get_user_by_token(token)
+        if user is not None:
+            auth.log_security_event("logout", user["username"], ip)
+        auth.logout(token)
     return {"status": "ok"}
 
 
@@ -140,17 +175,20 @@ def change_password(
 
     改密后吊销该用户所有会话（包括当前这个），必须重新登录。
     """
-    ip = request.client.host if request.client else "unknown"
+    ip = get_client_ip(request)
     if ratelimit.is_locked(ip, user["username"]):
+        auth.log_security_event("change_password_locked", user["username"], ip, "触发限流锁定")
         raise HTTPException(status_code=429, detail="尝试次数过多，请 15 分钟后再试")
     if not auth.check_password(user["username"], req.old_password):
         ratelimit.record_failure(ip, user["username"])
+        auth.log_security_event("change_password_failure", user["username"], ip, "旧密码错误")
         raise HTTPException(status_code=401, detail="旧密码不正确")
     if len(req.new_password) < 8:
         raise HTTPException(status_code=400, detail="新密码至少 8 位")
     if not auth.change_password(user["username"], req.new_password):
         raise HTTPException(status_code=404, detail="用户不存在")
     ratelimit.reset(ip, user["username"])
+    auth.log_security_event("change_password", user["username"], ip, "密码已修改")
     return {"status": "ok", "message": "密码已修改，请重新登录"}
 
 
@@ -182,9 +220,16 @@ def chat_stream(req: ChatRequest, user: dict = Depends(get_current_user)) -> Str
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """管理员依赖：权限组里必须含 admin，否则 403（有资格问题，不是身份问题）。"""
+    if "admin" not in user["groups"]:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
+
+
 @app.post("/api/documents/rebuild")
-def rebuild_index() -> dict:
-    """重新扫描 data/sample 并重建向量索引（内部工具，生产需加鉴权 + 管理员校验）。"""
+def rebuild_index(admin: dict = Depends(require_admin)) -> dict:
+    """重建索引（仅管理员可调）。"""
     from store import build_index
     collection = build_index(chunk_size=150)  # 150 是评估结论推荐的分块大小
     return {"status": "ok", "chunks": collection.count()}

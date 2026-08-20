@@ -1,11 +1,25 @@
 services:
+  nginx:
+    image: nginx:alpine
+    container_name: rag-nginx
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # 顶替镜像自带的 default.conf，避免它抢占 80 端口返回 404
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro   # 把 kb.crt / kb.key / ca.crt 放进 certs/
+    restart: unless-stopped
+
   ollama:
     image: ollama/ollama:latest
     container_name: rag-ollama
     volumes:
       - ollama_data:/root/.ollama   # 模型持久化：拉一次，重启不丢
-    ports:
-      - "11434:11434"
+    # 不暴露端口：backend 通过内部网络服务名 ollama:11434 连接；
+    # 宿主机的 11434 留给本机原生 Ollama，避免端口冲突
     # GPU 直通：有 NVIDIA 显卡时生效；没有就注释掉这段（CPU 也能跑，只是慢）
     deploy:
       resources:
@@ -26,7 +40,7 @@ services:
     volumes:
       - app_data:/app/data                # Chroma 索引 + 审计日志持久化
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"             # 只绑本机（调试 XFF 用）；公网入口只剩 nginx
     restart: unless-stopped
 
 volumes:

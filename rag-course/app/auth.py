@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "users.db"
-SESSION_TTL = timedelta(hours=24)  # token 有效期：1 天
+SESSION_TTL = timedelta(hours=0.5)  # token 有效期：30分钟
 PBKDF2_ITERATIONS = 600_000        # 当前目标迭代次数（OWASP 建议量级）
 LEGACY_ITERATIONS = 100_000        # 老哈希用的迭代次数（兼容迁移前的账号）
 
@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     username TEXT NOT NULL,
     expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS security_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    time TEXT NOT NULL,
+    event TEXT NOT NULL,            -- login_success / login_failure / login_locked / logout / change_password ...
+    username TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    detail TEXT
 );
 """
 
@@ -207,9 +215,27 @@ def count_users() -> int:
         return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
 
+def log_security_event(
+    event: str,
+    username: str,
+    ip: str,
+    detail: str | None = None,
+) -> None:
+    """记录安全事件（登录/登出/改密），与问答审计 audit.jsonl 分开存放。"""
+    with closing(_connect()) as conn:
+        conn.execute(
+            "INSERT INTO security_log (time, event, username, ip, detail) VALUES (?, ?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), event, username, ip, detail),
+        )
+        conn.commit()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="用户管理")
-    parser.add_argument("command", choices=["seed", "add-user", "change-password", "list"])
+    parser.add_argument(
+        "command",
+        choices=["seed", "add-user", "change-password", "list", "security-log"],
+    )
     args = parser.parse_args()
 
     if args.command == "seed":
@@ -241,6 +267,18 @@ def main() -> None:
             rows = conn.execute("SELECT username, groups FROM users").fetchall()
         for row in rows:
             print(f"{row['username']}  {row['groups']}")
+    elif args.command == "security-log":
+        init_db()
+        with closing(_connect()) as conn:
+            rows = conn.execute(
+                "SELECT time, event, username, ip, detail FROM security_log "
+                "ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+        if not rows:
+            print("暂无安全事件")
+        for row in rows:
+            detail = f"  {row['detail']}" if row["detail"] else ""
+            print(f"{row['time']}  {row['event']}  {row['username']}  {row['ip']}{detail}")
 
 
 if __name__ == "__main__":

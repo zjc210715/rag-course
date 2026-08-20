@@ -73,10 +73,13 @@ docker exec rag-backend python app/store.py --chunk-size 150
 - 检索：向量召回 + BM25 混合重排；分块参数经对比实验确定（150 字）
 - 生成：带引用标注、防幻觉 Prompt、多轮对话、SSE 流式输出
 - 登录认证：pbkdf2 加盐慢哈希（60 万次迭代，登录时渐进重哈希）、
-  服务端会话 token（24h 过期、可即时吊销）、登录后修改密码
+  服务端会话 token（30 分钟过期、可即时吊销）、登录后修改密码
 - 权限：文档 access 标签 + Chroma where 数据库层过滤；默认拒绝未登录访问
+- 管理员：groups 含 admin 的角色才能重建索引（/api/documents/rebuild）
 - 限流：登录/改密按 IP+用户名 5 分钟 5 次失败锁定 15 分钟
 - 审计：问答留痕（用户/时间/问题/答案/引用），用户名来自服务端验证
+- 安全日志：登录成功/失败/锁定、登出、改密事件入库，可用
+  `python app/auth.py security-log` 查询
 - 评估：Hit@3 检索评估 + LLM 裁判答案评估（忠实度/相关性）
 - 前端：档案蓝主题、指标卡、印章式引用卡、流式打字效果
 
@@ -108,5 +111,6 @@ docker exec rag-backend python app/store.py --chunk-size 150
 - 扫描版 PDF 需 OCR；同内容多格式会产生重复检索结果（需去重）
 - 限流为单进程内存实现，多 worker 需换 Redis
 - 未接统一认证（SSO/AD），生产建议接 OIDC
-- 生产必做：HTTPS、默认密码修改、/api/documents/rebuild 加管理员校验、
-  安全审计日志（登录失败/改密事件）、会话有效期缩短
+- 生产必做：HTTPS、默认密码修改、安全日志保留策略与告警
+- 运维备份：`powershell -File scripts/backup.ps1` 每日备份数据卷（含轮转），
+  `powershell -File scripts/restore-check.ps1` 演练恢复；建议接计划任务/定时任务

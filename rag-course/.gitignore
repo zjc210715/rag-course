@@ -4,3 +4,12 @@ __pycache__/
 data/chroma/
 data/audit*.jsonl
 data/*.db
+certs/*.key
+backups/
+
+# 证书与私钥（环境相关，不入库；部署时另行提供）
+certs/
+*.key
+*.csr
+*.srl
+san.cnf
