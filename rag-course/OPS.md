@@ -78,7 +78,22 @@
 
 **注意**：限流是内存版，重启 backend 会清零失败计数（逃生通道）；但多 worker 部署时限流失效，届时换 Redis。
 
-## 6. 证书管理（最容易忘的坑）
+## 6. 忘记密码重置
+
+员工忘记密码、管理员忘记自己的密码——**只要有服务器访问权就能重置**（CLI 是管理通道：能登服务器 = 最高权限）。
+
+```powershell
+docker exec -it rag-backend python app/auth.py change-password
+# 交互式输入：用户名 → 新密码 → 再确认一次
+```
+
+- 本地开发（没走 Docker）则在 rag-course 目录直接跑 `python app/auth.py change-password`；
+- 重置后该用户**所有登录会话立即失效**，用新密码重新登录；
+- CLI 重置**不需要旧密码**（区别于 API 改密：API 要旧密码 + 登录态，CLI 是管理通道）；
+- 任何账号都一样处理：zhangsan、lisi、admin 均可重置；
+- 安全提醒：能执行这条命令的人 = 能接管所有账号，服务器/数据库权限必须严格管控。
+
+## 7. 证书管理（最容易忘的坑）
 
 - 证书位置：`certs/kb.crt` + `certs/kb.key`，有效期 **365 天**，过期后全公司无法访问；
 - 每周自动检查：`scripts/check-cert.ps1`（定时任务 KB-CertCheck），剩余 <30 天会报警；
@@ -94,7 +109,7 @@ curl -k https://<域名>/api/health   # 验证
 
 - CA 根证书（ca.crt）10 年有效，但 **ca.key 必须放仓库外安全位置**。
 
-## 7. 周期性安全运维
+## 8. 周期性安全运维
 
 | 周期 | 事项 |
 | --- | --- |
@@ -103,13 +118,13 @@ curl -k https://<域名>/api/health   # 验证
 | 每季度 | `docker compose pull` + rebuild（基础镜像安全补丁）；检查密钥与账号 |
 | 每年 | 证书续签；安全审计复盘 |
 
-## 8. 容量规划信号
+## 9. 容量规划信号
 
 - 文档几百份：chroma 膨胀，监控磁盘；分块参数重跑评估实验；
 - 并发几十人：qwen3 8B 单请求串行，看 `docker stats`；压力大加 worker/换机器（限流同步换 Redis）；
 - 日志量大：audit/security_log 定保留期归档，避免无限膨胀。
 
-## 9. 值班速查卡（出事故先看这）
+## 10. 值班速查卡（出事故先看这）
 
 ```text
 1. docker compose ps                    → 谁挂了
@@ -117,4 +132,5 @@ curl -k https://<域名>/api/health   # 验证
 3. 是数据问题？→ 备份恢复（第 3 节）
 4. 是代码问题？→ git revert + rebuild（第 4 节）
 5. 先恢复服务，根因记录到值班日志，事后复盘
+6. 用户忘密码？→ docker exec rag-backend python app/auth.py change-password（第 6 节）
 ```

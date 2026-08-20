@@ -152,11 +152,16 @@ with st.sidebar:
         uploaded = st.file_uploader(
             "上传文档", type=["md", "txt", "pdf", "docx"], label_visibility="collapsed"
         )
+        # 只能选择自己拥有的权限标签（后端同样校验，前端只是体验）
+        user_groups = auth_state.get("groups") or ["all"]
+        access_options = [g for g in user_groups if g != "admin"]
+        if "admin" in user_groups:
+            access_options = ["all", "finance", "dept_HR", "executive"]
         access = st.selectbox(
             "可见范围",
-            ["all", "finance", "dept_HR", "executive"],
+            access_options,
             label_visibility="collapsed",
-            help="文档权限标签：all=全员，部门组=对应成员，executive=机密",
+            help="只能设置自己拥有的权限标签；admin 可设置任意",
         )
         if uploaded is not None and st.button("上传并入库", type="primary", icon=":material/upload:"):
             content_b64 = base64.b64encode(uploaded.getvalue()).decode("ascii")

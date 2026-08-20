@@ -286,6 +286,9 @@ def upload_document(req: UploadRequest, user: dict = Depends(get_current_user)) 
         raise HTTPException(status_code=400, detail="文件名不合法")
     if Path(req.filename).suffix.lower() not in {".md", ".markdown", ".txt", ".pdf", ".docx"}:
         raise HTTPException(status_code=400, detail="不支持的格式")
+    # 防权限提升：只能设置自己拥有的权限标签；admin 可设置任意
+    if not req.access or ("admin" not in user["groups"] and req.access not in user["groups"]):
+        raise HTTPException(status_code=403, detail="无权设置该权限标签（只能设置自己拥有的权限）")
     try:
         content = base64.b64decode(req.content_b64)
     except Exception:
